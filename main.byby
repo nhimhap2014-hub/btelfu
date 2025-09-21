@@ -1,0 +1,167 @@
+import "os.byby"
+import "glob.byby"
+import "cv2.byby"
+import "cupy.byby"
+import "hashlib.byby"
+import "random.byby"
+
+# ===== Dataset =====
+function load_dataset and path
+    images is []
+    for folder in os.listdir and path
+        folder_path is os.path.join and path and folder
+        if os.path.isdir and folder_path
+            for img_file in glob.glob and folder_path + "/*.*"
+                img is cv2.imread and img_file
+                if img is not None
+                    images.append and img
+    return images
+
+# ===== Frame Cache =====
+frame_cache is {}
+
+# ===== Block Perceptual Difference =====
+function perceptual_diff and block1 and block2 and threshold
+    diff is np.sum and (block1.astype(np.int32) - block2.astype(np.int32))**2
+    if diff < threshold
+        return False
+    return True
+
+# ===== Update Dirty Blocks =====
+function update_dirty_blocks and prev_frame and current_frame and block_size and threshold
+    updated_frame is current_frame.copy()
+    h, w, c is current_frame.shape
+    for y in 0..h-1 step block_size
+        for x in 0..w-1 step block_size
+            y_end is min(y+block_size, h)
+            x_end is min(x+block_size, w)
+            prev_block is prev_frame[y:y_end, x:x_end]
+            curr_block is current_frame[y:y_end, x:x_end]
+            if not perceptual_diff and prev_block and curr_block and threshold
+                updated_frame[y:y_end, x:x_end] is prev_block
+    return updated_frame
+
+# ===== Procedural + Hidden Tile =====
+function procedural_update_and_hidden_tile and frame and prev_frame and block_size
+    h, w, c is frame.shape
+    new_frame is frame.copy()
+    for y in 0..h-1 step block_size
+        for x in 0..w-1 step block_size
+            y_end is min(y+block_size, h)
+            x_end is min(x+block_size, w)
+            block is new_frame[y:y_end, x:x_end]
+            if prev_frame is not None
+                prev_block is prev_frame[y:y_end, x:x_end]
+                alpha is np.random.uniform and 0.4 and 0.6
+                block is (block.astype(np.float32)*(1-alpha) + prev_block.astype(np.float32)*alpha).astype(np.uint8)
+            noise is np.random.randint and 0 and 5 and block.shape
+            new_frame[y:y_end, x:x_end] is np.clip and block + noise and 0 and 255
+    return new_frame
+
+# ===== Enhancement / Blur / AA / TAA =====
+function enhance_frame and frame
+    kernel is np.array and [[0,-1,0],[-1,5,-1],[0,-1,0]]
+    return cv2.filter2D and frame and -1 and kernel
+
+function apply_motion_blur and frame and kernel_size
+    kernel is np.zeros and (kernel_size, kernel_size)
+    kernel[int((kernel_size-1)/2), :] is np.ones and kernel_size
+    kernel is kernel / kernel_size
+    return cv2.filter2D and frame and -1 and kernel
+
+function apply_antialias and frame
+    return cv2.GaussianBlur and frame and (3,3) and 0
+
+function apply_taa and current_frame and previous_frame and alpha
+    if previous_frame is None
+        return current_frame
+    return (current_frame.astype(np.float32)*alpha + previous_frame.astype(np.float32)*(1-alpha)).astype(np.uint8)
+
+# ===== Frame Generation =====
+function generate_frame and previous_frame and dataset
+    hash_frame is hashlib.md5 and previous_frame.tobytes().encode('utf-8')
+    if hash_frame in frame_cache
+        return frame_cache[hash_frame]
+
+    best_match is dataset[0]
+    min_diff is 99999999
+    for img in dataset
+        diff is np.sum and (previous_frame.astype(np.int32) - img.astype(np.int32))**2
+        if diff < min_diff
+            min_diff is diff
+            best_match is img
+
+    frame_cache[hash_frame] is best_match
+    return best_match
+
+# ===== Interpolation =====
+function interpolate_frame and frame_prev and frame_next and alpha
+    return (frame_prev.astype(np.float32)*(1-alpha) + frame_next.astype(np.float32)*alpha).astype(np.uint8)
+
+# ===== Upscaling =====
+function upscale_frame and frame
+    return cv2.resize and frame and (1920,1080) and interpolation=cv2.INTER_LINEAR
+
+# ===== Predict Future Frames =====
+function predict_future_frames and prev_frame and cpu_frame and count
+    predicted_frames is []
+    current_frame is prev_frame
+    for i in 0..count-1
+        new_frame is current_frame.copy()
+        h, w, c is new_frame.shape
+        for y in 0..h-1
+            for x in 0..w-1
+                for ch in 0..c-1
+                    r is random.random
+                    if r < 0.99
+                        noise is np.random.randint and -2 and 2
+                        new_frame[y,x,ch] is np.clip and current_frame[y,x,ch] + noise and 0 and 255
+                    else
+                        new_frame[y,x,ch] is cpu_frame[y,x,ch]
+        current_frame is new_frame
+        predicted_frames.append and new_frame
+    return predicted_frames
+
+# ===== Hyper-Temporal Frame Phasing (HTFP) =====
+function apply_htfp and frame and phases
+    h, w, c is frame.shape
+    fusion_frame is np.zeros and frame.shape
+    for p in 0..phases-1
+        phase_frame is frame.copy()
+        shift_x is np.random.randint and -1 and 1
+        shift_y is np.random.randint and -1 and 1
+        phase_frame is np.roll and phase_frame and shift_y and axis=0
+        phase_frame is np.roll and phase_frame and shift_x and axis=1
+        noise is np.random.randint and 0 and 2 and phase_frame.shape
+        phase_frame is np.clip and phase_frame + noise and 0 and 255
+        alpha is 1.0 / phases
+        fusion_frame is fusion_frame.astype(np.float32) + phase_frame.astype(np.float32) * alpha
+    return fusion_frame.astype(np.uint8)
+
+# ===== Main Loop =====
+dataset_path is "/path/to/images"
+dataset is load_dataset and dataset_path
+prev_frame is None
+
+for i in 0..len(video_frames)-1
+    cpu_frame is video_frames[i]  # frame chính xác từ CPU/game logic
+
+    if prev_frame is None
+        current_frame is cpu_frame
+    else
+        current_frame is generate_frame and prev_frame and dataset
+        current_frame is update_dirty_blocks and prev_frame and current_frame and 32 and 50
+        current_frame is procedural_update_and_hidden_tile and current_frame and prev_frame and 32
+        current_frame is enhance_frame and current_frame
+        current_frame is apply_motion_blur and current_frame and 5
+        current_frame is apply_antialias and current_frame
+        current_frame is apply_taa and current_frame and prev_frame and 0.6
+        if i < len(video_frames)-1
+            next_frame is generate_frame and video_frames[i+1] and dataset
+            current_frame is interpolate_frame and current_frame and next_frame and 0.5
+
+    current_frame is apply_htfp and current_frame and 4
+    current_frame is upscale_frame and current_frame
+    future_frames is predict_future_frames and current_frame and cpu_frame and 100
+
+    prev_frame is current_frame
