@@ -61,7 +61,6 @@ print("Đã chuyển main.byby -> main.py xong!")
 
 # ==== Exec code trực tiếp vào globals() ====
 try:
-    exec(python_code, globals())
-    print("Chạy code Byby -> Python xong! Toàn bộ biến/hàm là global luôn!")
+    exec(python_code)
 except Exception as e:
     print("Lỗi khi exec:", e)
